@@ -10,9 +10,12 @@ import cv2
 import os
 
 from modules import script_callbacks, shared
+from modules.extras import run_pnginfo
 from gradio.events import EventListenerMethod
 from pathlib import Path
 from functools import partial
+from PIL import Image, PngImagePlugin
+from tqdm import tqdm
 
 from typing import Literal, Any
 
@@ -50,7 +53,7 @@ def pretty_print_dict(d: dict, n_tabs: int = 0) -> str:
         elif isinstance(v, dict):
             result.append(f"{tabs}{k}:\n{pretty_print_dict(v, n_tabs+1)}")
         elif "\n" not in str(v):
-            result.append(f"{tabs}{k}: {v}")
+            result.append(f"{tabs}{k}: {str(v)[:500]}")
         elif isinstance(v, list):
             result.append(f"{tabs}{k}: list | len: {len(v)}")
         else:
@@ -77,10 +80,15 @@ def copy_images(indir: str, outdir: str) -> None:
     outdir = Path(outdir).resolve()
     indir = Path(indir).resolve()
     files = os.listdir(indir)
-    for file in files:
+    for file in tqdm(files, desc=f"copying {len(files)} files"):
         if file.endswith((".png", ".jpg", ".jpeg")):
-            image = indir.joinpath(file)
-            cv2.imwrite(str(outdir.joinpath(file)), cv2.imread(str(image)))
+            image_path = indir.joinpath(file)
+            image = Image.open(image_path)
+            metadata = PngImagePlugin.PngInfo()
+            for key, value in image.info.items():
+                if isinstance(key, str) and isinstance(value, str):
+                    metadata.add_text(key, value)
+            image.save(outdir.joinpath(file), pnginfo=metadata)
 
 
 def open_folder(f):
@@ -187,13 +195,14 @@ class State:
         idx = self.metrics["indices"][f"{gallery}_{sort_by}_idx"]
         self[f"{gallery}_sort_idx"] = idx
         paths = self.metrics["paths"][gallery][idx]
-        return [str(path) for path in paths]
+        return [str(path) for path in paths[:2000]]
 
     def get_image_stats(
         self, event: gr.SelectData, gallery: Literal["embedding", "candidate"]
     ) -> str:
         idx = self[f"{gallery}_sort_idx"][event.index]
         path = self.metrics["paths"][gallery][idx]
+        _, gen_info, _ = run_pnginfo(Image.open(path))
         self[f"{gallery}_selected_idx"] = idx
         self[f"{gallery}_selected_path"] = path
 
@@ -223,6 +232,7 @@ class State:
             f"WEIGHTED DISTANCE:  {weighted_distance:.4} | Top {weighted_distance_percentile*100:.2f}%\n\n"
             f"SCORE:              {score:.4f} | Top {score_percentile*100:.2f}%\n\n"
             f"METADATA:\n    filename: {path.name}\n    fullpath: {str(path)}"
+            f"\n\n{gen_info}"
         )
 
 
@@ -283,7 +293,6 @@ def refresh(component):
 
 
 def refresh_vault(component):
-    print("REFRESHING VAULT")
     return component.then(
         fn=lambda: [
             str(facefinder.PATHS.PROCESSED_IMAGES.joinpath(img))
